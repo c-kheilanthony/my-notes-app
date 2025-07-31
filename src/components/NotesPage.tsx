@@ -41,22 +41,28 @@ export function NotesPage({ session }: NotesPageProps) {
       .channel("notes-changes")
       .on(
         "postgres_changes",
-        { event: "*", schema: "public", table: "notes" },
+        {
+          event: "INSERT",
+          schema: "public",
+          table: "notes",
+          filter: `user_id=eq.${userId}`,
+        },
         (payload) => {
-          if (
-            payload.eventType === "INSERT" &&
-            payload.new.user_id === userId
-          ) {
-            setNotes((prev) => [payload.new as Note, ...prev]);
-          }
-          if (
-            payload.eventType === "DELETE" &&
-            payload.old.user_id === userId
-          ) {
-            setNotes((prev) =>
-              prev.filter((n) => n.id !== (payload.old as Note).id)
-            );
-          }
+          setNotes((prev) => [payload.new as Note, ...prev]);
+        }
+      )
+      .on(
+        "postgres_changes",
+        {
+          event: "DELETE",
+          schema: "public",
+          table: "notes",
+          filter: `user_id=eq.${userId}`,
+        },
+        (payload) => {
+          setNotes((prev) =>
+            prev.filter((n) => n.id !== (payload.old as Note).id)
+          );
         }
       )
       .subscribe();
