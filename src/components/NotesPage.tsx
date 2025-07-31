@@ -1,6 +1,9 @@
 import { useState, useEffect } from "react";
 import { supabase } from "../lib/supabaseClient";
 import type { Session } from "@supabase/supabase-js";
+import NotesList from "./NotesList";
+import NoteModal from "./NoteModal";
+import toast from "react-hot-toast";
 
 interface Note {
   id: string;
@@ -15,12 +18,7 @@ interface NotesPageProps {
 export function NotesPage({ session }: NotesPageProps) {
   const [notes, setNotes] = useState<Note[]>([]);
   const [newContent, setNewContent] = useState("");
-
-  //modal state & handlers
   const [selectedNote, setSelectedNote] = useState<Note | null>(null);
-
-  const openModal = (note: Note) => setSelectedNote(note);
-  const closeModal = () => setSelectedNote(null);
 
   const userId = session.user.id;
 
@@ -42,27 +40,27 @@ export function NotesPage({ session }: NotesPageProps) {
       .on(
         "postgres_changes",
         {
-          event: "INSERT",
+          event: "*",
           schema: "public",
           table: "notes",
           filter: `user_id=eq.${userId}`,
         },
         (payload) => {
-          setNotes((prev) => [payload.new as Note, ...prev]);
-        }
-      )
-      .on(
-        "postgres_changes",
-        {
-          event: "DELETE",
-          schema: "public",
-          table: "notes",
-          filter: `user_id=eq.${userId}`,
-        },
-        (payload) => {
-          setNotes((prev) =>
-            prev.filter((n) => n.id !== (payload.old as Note).id)
-          );
+          if (payload.eventType === "INSERT") {
+            setNotes((prev) => [payload.new as Note, ...prev]);
+          }
+          if (payload.eventType === "DELETE") {
+            setNotes((prev) =>
+              prev.filter((n) => n.id !== (payload.old as Note).id)
+            );
+          }
+          if (payload.eventType === "UPDATE") {
+            setNotes((prev) =>
+              prev.map((n) =>
+                n.id === (payload.new as Note).id ? (payload.new as Note) : n
+              )
+            );
+          }
         }
       )
       .subscribe();
@@ -74,17 +72,37 @@ export function NotesPage({ session }: NotesPageProps) {
 
   const addNote = async () => {
     if (!newContent.trim()) return;
+
+    // Remove optimistic UI for add to avoid duplicates
     const { error } = await supabase.from("notes").insert({
       content: newContent,
       user_id: userId,
     });
-    if (error) console.error(error);
-    else setNewContent("");
+
+    if (error) {
+      console.error(error);
+      toast.error("Failed to add note");
+    } else {
+      toast.success("Note added");
+    }
+
+    setNewContent(""); // Clear input after adding
   };
 
   const deleteNote = async (id: string) => {
+    // Optimistic delete
+    const previousNotes = notes;
+    setNotes((prev) => prev.filter((n) => n.id !== id));
+
     const { error } = await supabase.from("notes").delete().eq("id", id);
-    if (error) console.error(error);
+
+    if (error) {
+      console.error(error);
+      toast.error("Failed to delete note");
+      setNotes(previousNotes); // rollback
+    } else {
+      toast.success("Note deleted");
+    }
   };
 
   const handleLogout = async () => {
@@ -123,85 +141,46 @@ export function NotesPage({ session }: NotesPageProps) {
         </button>
       </div>
 
-      {/* Notes Grid */}
-      <h2 className="text-xl text-gray-300 mb-4">Your Notes</h2>
-      {notes.length === 0 ? (
-        <div className="flex flex-col items-center justify-center text-gray-500 mt-10">
-          <p className="text-lg">No notes yet...</p>
-          <p className="text-sm">Start writing something amazing! ✍️</p>
-        </div>
-      ) : (
-        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-6">
-          {notes.map((note) => (
-            <div
-              key={note.id}
-              onClick={() => openModal(note)}
-              className="bg-gray-800 p-4 rounded-xl shadow-md hover:shadow-lg transition transform hover:scale-105 flex flex-col justify-between cursor-pointer"
-            >
-              <p className="text-gray-100 text-lg break-words line-clamp-4 overflow-hidden">
-                {note.content}
-              </p>
-              <div className="mt-4 flex justify-end space-x-2">
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    openModal(note);
-                  }}
-                  className="text-indigo-400 hover:text-indigo-500 text-sm font-medium"
-                >
-                  View
-                </button>
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    deleteNote(note.id);
-                  }}
-                  className="text-red-400 hover:text-red-500 text-sm font-medium"
-                >
-                  Delete
-                </button>
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-      {selectedNote && (
-        <div
-          className="fixed inset-0 bg-black/60 flex items-center justify-center z-50"
-          onClick={closeModal}
-        >
-          <div
-            onClick={(e) => e.stopPropagation()}
-            className="bg-gray-900 text-gray-100 max-w-2xl w-11/12 max-h-[90vh] p-8 rounded-2xl shadow-2xl overflow-y-auto relative"
-          >
-            <h3 className="text-xl font-bold mb-4">Full Note</h3>
-            <textarea
-              readOnly
-              value={selectedNote.content}
-              className="w-full bg-gray-800 text-gray-100 p-4 rounded-md resize-none focus:outline-none mb-6 h-[60vh] overflow-y-auto custom-scrollbar"
-            />
-            <button
-              onClick={closeModal}
-              className="absolute top-4 right-4 text-gray-400 hover:text-gray-200"
-            >
-              <svg
-                xmlns="http://www.w3.org/2000/svg"
-                className="h-6 w-6"
-                fill="none"
-                viewBox="0 0 24 24"
-                stroke="currentColor"
-              >
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth={2}
-                  d="M6 18L18 6M6 6l12 12"
-                />
-              </svg>
-            </button>
-          </div>
-        </div>
-      )}
+      {/* Notes */}
+      <NotesList
+        notes={notes}
+        onDelete={deleteNote}
+        onSelect={setSelectedNote}
+      />
+
+      {/* Modal */}
+      <NoteModal
+        note={selectedNote}
+        onClose={() => setSelectedNote(null)}
+        onSave={async (updatedNote) => {
+          // Optimistic update
+          setNotes((prev) =>
+            prev.map((n) => (n.id === updatedNote.id ? updatedNote : n))
+          );
+          setSelectedNote(null);
+
+          // Feedback: Loading
+          toast.loading("Saving changes...");
+
+          // API call
+          const { error } = await supabase
+            .from("notes")
+            .update({ content: updatedNote.content })
+            .eq("id", updatedNote.id);
+
+          // Dismiss loader and show result
+          toast.dismiss();
+          if (error) {
+            console.error(error);
+            toast.error("Failed to update");
+            fetchNotes(); // rollback to server state
+          } else {
+            toast.success("Note updated");
+          }
+        }}
+      />
     </div>
   );
 }
+
+export default NotesPage;
